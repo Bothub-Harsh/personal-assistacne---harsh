@@ -40,6 +40,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+import os
+
+
 # Third-party (install via pip)
 try:
     from dotenv import load_dotenv
