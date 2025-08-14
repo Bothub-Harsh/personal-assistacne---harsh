@@ -443,29 +443,28 @@ def banner():
     )
     return msg
 
+assistant = HarshAssistant()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Hello! Harsh Assistant is now active on Telegram.")
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_in = update.message.text
+    response = assistant.route(user_in)  # This calls your existing HarshAssistant logic
+    if response:
+        await update.message.reply_text(response)
 
 def main():
-    assistant = HarshAssistant()
-    if assistant.console:
-        assistant.console.rule(f"[bold]{APP_NAME} — Ready")
-        assistant.print(banner())
-    else:
-        print(banner())
+    bot_token = os.getenv("BOT_TOKEN")  # Set in Render environment variables
+    if not bot_token:
+        raise ValueError("BOT_TOKEN environment variable not set!")
 
-    while True:
-        try:
-            if assistant.console:
-                user_in = Prompt.ask("You")
-            else:
-                user_in = input("You> ")
-            if not user_in:
-                continue
-            assistant.route(user_in)
-        except (KeyboardInterrupt, EOFError):
-            assistant.cmd_exit()
-        except Exception as e:
-            assistant.panel(f"Error: {e}")
+    app = ApplicationBuilder().token(bot_token).build()
 
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
+
