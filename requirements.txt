@@ -8,7 +8,8 @@ googletrans==4.0.0rc1
 pyttsx3
 python-decouple
 lxml
-python-telegram-bot
+python-telegram-bot==20.3
+
 
 
 
