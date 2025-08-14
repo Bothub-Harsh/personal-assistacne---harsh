@@ -42,8 +42,8 @@ from pathlib import Path
 
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from keep_alive import keep_alive
 import os
-
 
 # Third-party (install via pip)
 try:
@@ -457,6 +457,8 @@ def main():
     bot_token = os.getenv("BOT_TOKEN")  # Set in Render environment variables
     if not bot_token:
         raise ValueError("BOT_TOKEN environment variable not set!")
+    
+    keep_alive()
 
     app = ApplicationBuilder().token(bot_token).build()
 
