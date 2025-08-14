@@ -9,4 +9,5 @@ pyttsx3
 python-decouple
 lxml
 python-telegram-bot
-imghdr-py
+imghdr
+
