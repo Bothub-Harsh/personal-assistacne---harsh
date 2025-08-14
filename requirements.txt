@@ -1,0 +1,11 @@
+requests
+beautifulsoup4
+wikipedia
+pyjokes
+pywhatkit
+SpeechRecognition
+pyaudio
+googletrans==4.0.0rc1
+pyttsx3
+python-decouple
+lxml
