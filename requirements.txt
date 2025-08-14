@@ -4,9 +4,8 @@ wikipedia
 pyjokes
 pywhatkit
 SpeechRecognition
-googletrans==4.0.2
+googletrans==4.0.0rc1
 pyttsx3
 python-decouple
 lxml
 python-telegram-bot==20.3
-httpx>=0.27.2
