@@ -4,7 +4,7 @@ wikipedia
 pyjokes
 pywhatkit
 SpeechRecognition
-googletrans==4.0.0rc1
+googletrans-py
 pyttsx3
 python-decouple
 lxml
