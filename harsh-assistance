@@ -1,0 +1,466 @@
+"""
+Harsh's Personal AI Assistant — MVP (Python CLI)
+-------------------------------------------------
+A beginner-friendly, extensible assistant you can run locally.
+
+✅ Works fully offline for core skills (time, reminders, to‑dos, open apps/URLs, Wikipedia via package)
+✅ Optional: Uses OpenAI for smarter chat if OPENAI_API_KEY is set (via .env)
+✅ Optional: Text‑to‑Speech via pyttsx3
+
+How to run (Windows/Mac/Linux):
+1) Create and activate a virtualenv (recommended)
+2) pip install -r requirements.txt  (see list in the REQUIREMENTS section below)
+3) (Optional) Create a .env file with: OPENAI_API_KEY=sk-...
+4) python assistant.py
+
+Type `help` in the app for available commands.
+
+REQUIREMENTS (put these in requirements.txt):
+------------------------------------------------
+python-dotenv
+pyttsx3
+wikipedia
+rich
+
+# Optional extras (uncomment if you plan to use them):
+# speechrecognition
+# openai>=1.0.0
+
+NOTE: Wikipedia package needs internet. Everything else works offline.
+"""
+from __future__ import annotations
+import os
+import re
+import sys
+import json
+import time
+import webbrowser
+import platform
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+
+# Third-party (install via pip)
+try:
+    from dotenv import load_dotenv
+except Exception:
+    def load_dotenv(*args, **kwargs):
+        pass
+
+try:
+    import wikipedia
+except Exception:
+    wikipedia = None
+
+try:
+    import pyttsx3
+except Exception:
+    pyttsx3 = None
+
+# Optional OpenAI (only if key is present)
+try:
+    import openai  # type: ignore
+except Exception:
+    openai = None
+
+# Pretty console
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.prompt import Prompt
+    from rich.panel import Panel
+    from rich import box
+except Exception:
+    Console = None
+
+APP_NAME = "Harsh Assistant"
+DATA_DIR = Path(__file__).parent / "assistant_data"
+MEMORY_FILE = DATA_DIR / "memory.json"
+TODO_FILE = DATA_DIR / "todos.json"
+CONFIG_FILE = DATA_DIR / "config.json"
+
+# ---------------------------
+# Utilities
+# ---------------------------
+
+def ensure_data_files():
+    DATA_DIR.mkdir(exist_ok=True)
+    if not MEMORY_FILE.exists():
+        MEMORY_FILE.write_text(json.dumps({"facts": []}, indent=2))
+    if not TODO_FILE.exists():
+        TODO_FILE.write_text(json.dumps({"todos": []}, indent=2))
+    if not CONFIG_FILE.exists():
+        CONFIG_FILE.write_text(json.dumps({"voice": False}, indent=2))
+
+
+def load_json(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {}
+
+
+def save_json(path: Path, data: dict) -> None:
+    path.write_text(json.dumps(data, indent=2))
+
+
+# ---------------------------
+# Speech (optional)
+# ---------------------------
+class Speaker:
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled and (pyttsx3 is not None)
+        self.engine = pyttsx3.init() if self.enabled else None
+        if self.engine:
+            # Slightly slower, clearer voice
+            rate = self.engine.getProperty('rate')
+            self.engine.setProperty('rate', int(rate * 0.9))
+
+    def say(self, text: str):
+        if not self.enabled:
+            return
+        try:
+            self.engine.say(text)
+            self.engine.runAndWait()
+        except Exception:
+            pass
+
+
+# ---------------------------
+# Core Assistant
+# ---------------------------
+@dataclass
+class Context:
+    speaker: Speaker
+    config: dict
+
+
+class HarshAssistant:
+    def __init__(self):
+        load_dotenv()
+        ensure_data_files()
+        self.console = Console() if Console else None
+        self.memory = load_json(MEMORY_FILE)
+        self.todos = load_json(TODO_FILE)
+        self.config = load_json(CONFIG_FILE)
+        self.speaker = Speaker(enabled=self.config.get("voice", False))
+        self.ctx = Context(speaker=self.speaker, config=self.config)
+
+        self.command_map = {
+            r"^(help|\?)$": self.cmd_help,
+            r"^(exit|quit)$": self.cmd_exit,
+            r"^(time|date|now)$": self.cmd_time,
+            r"^open url (.+)$": self.cmd_open_url,
+            r"^open app (.+)$": self.cmd_open_app,
+            r"^wiki (.+)$": self.cmd_wikipedia,
+            r"^todo add (.+)$": self.cmd_todo_add,
+            r"^todo list$": self.cmd_todo_list,
+            r"^todo done (\d+)$": self.cmd_todo_done,
+            r"^remember (.+)$": self.cmd_remember,
+            r"^recall$": self.cmd_recall,
+            r"^voice (on|off)$": self.cmd_voice_toggle,
+            r"^joke$": self.cmd_joke,
+            r"^chat (.+)$": self.cmd_chat_smart,
+            r"^skills$": self.cmd_skills,
+            r"^clear$": self.cmd_clear,
+        }
+
+        self.smart_model_ready = bool(os.getenv("OPENAI_API_KEY")) and (openai is not None)
+        if self.smart_model_ready:
+            try:
+                openai.api_key = os.getenv("OPENAI_API_KEY")
+            except Exception:
+                self.smart_model_ready = False
+
+    # -------------- Helpers --------------
+    def print(self, text: str):
+        if self.console:
+            self.console.print(text)
+        else:
+            print(text)
+
+    def panel(self, text: str, title: str = APP_NAME):
+        if self.console:
+            self.console.print(Panel(text, title=title))
+        else:
+            print(f"[{title}]\n{text}")
+
+    # -------------- Commands --------------
+    def cmd_help(self, *_):
+        table = Table(title=f"{APP_NAME} — Commands", box=box.SIMPLE) if self.console else None
+        rows = [
+            ("help / ?", "Show this help"),
+            ("skills", "List all skills"),
+            ("time", "Show current date & time (IST)"),
+            ("open url <link>", "Open a website in browser"),
+            ("open app <name>", "Try to open an application"),
+            ("wiki <topic>", "Wikipedia summary (needs internet)"),
+            ("todo add <text>", "Add a to‑do"),
+            ("todo list", "List to‑dos"),
+            ("todo done <#>", "Mark to‑do completed"),
+            ("remember <fact>", "Save a memory/fact"),
+            ("recall", "Show saved memories"),
+            ("voice on/off", "Toggle text‑to‑speech"),
+            ("joke", "Tell a quick joke"),
+            ("chat <message>", "Smart chat (uses OpenAI if configured)"),
+            ("clear", "Clear the screen"),
+            ("exit", "Quit the assistant"),
+        ]
+        if table:
+            table.add_column("Command", style="bold")
+            table.add_column("What it does")
+            for a, b in rows:
+                table.add_row(a, b)
+            self.console.print(table)
+        else:
+            for a, b in rows:
+                print(f"- {a:18} : {b}")
+
+    def cmd_exit(self, *_):
+        self.panel("Goodbye! Keep coding, Harsh ✌️")
+        sys.exit(0)
+
+    def cmd_time(self, *_):
+        # User timezone Asia/Kolkata
+        # Using system local time; you can adjust if needed
+        now = datetime.now().strftime("%A, %d %B %Y • %I:%M %p")
+        msg = f"Current time: {now} (system time)"
+        self.panel(msg)
+        self.speaker.say(f"It is {now}")
+
+    def cmd_open_url(self, match):
+        url = match.group(1).strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            url = "https://" + url
+        webbrowser.open(url)
+        self.panel(f"Opening: {url}")
+
+    def cmd_open_app(self, match):
+        name = match.group(1).strip()
+        ok = self._try_open_app(name)
+        if ok:
+            self.panel(f"Trying to open app: {name}")
+        else:
+            self.panel(f"Couldn't open '{name}'. You can map apps in assistant_data/config.json")
+
+    def _try_open_app(self, name: str) -> bool:
+        # You can customize app paths in config.json as {"apps": {"vscode": "C:/.../Code.exe"}}
+        cfg = load_json(CONFIG_FILE)
+        app_map = cfg.get("apps", {}) if isinstance(cfg, dict) else {}
+        path = app_map.get(name.lower())
+        try:
+            if path and Path(path).exists():
+                if platform.system() == "Windows":
+                    os.startfile(path)  # type: ignore
+                elif platform.system() == "Darwin":
+                    os.system(f"open '{path}'")
+                else:
+                    os.system(f"xdg-open '{path}'")
+                return True
+        except Exception:
+            return False
+        return False
+
+    def cmd_wikipedia(self, match):
+        topic = match.group(1).strip()
+        if wikipedia is None:
+            self.panel("Wikipedia package not installed. Run: pip install wikipedia")
+            return
+        try:
+            wikipedia.set_lang("en")
+            summary = wikipedia.summary(topic, sentences=3, auto_suggest=True, redirect=True)
+            self.panel(summary, title=f"Wikipedia • {topic}")
+            self.speaker.say(summary)
+        except Exception as e:
+            self.panel(f"Couldn't fetch summary: {e}")
+
+    def cmd_todo_add(self, match):
+        text = match.group(1).strip()
+        data = load_json(TODO_FILE)
+        todos = data.get("todos", [])
+        todos.append({"task": text, "done": False, "ts": time.time()})
+        save_json(TODO_FILE, {"todos": todos})
+        self.panel(f"Added to‑do: {text}")
+
+    def cmd_todo_list(self, *_):
+        data = load_json(TODO_FILE)
+        todos = data.get("todos", [])
+        if not todos:
+            self.panel("No to‑dos yet. Add with: todo add <text>")
+            return
+        if self.console:
+            table = Table(title="Your To‑Dos", box=box.SIMPLE)
+            table.add_column("#", justify="right")
+            table.add_column("Task")
+            table.add_column("Done?")
+            for i, t in enumerate(todos, 1):
+                table.add_row(str(i), t["task"], "✅" if t.get("done") else "❌")
+            self.console.print(table)
+        else:
+            for i, t in enumerate(todos, 1):
+                print(f"{i}. {t['task']} — {'DONE' if t.get('done') else 'PENDING'}")
+
+    def cmd_todo_done(self, match):
+        idx = int(match.group(1)) - 1
+        data = load_json(TODO_FILE)
+        todos = data.get("todos", [])
+        if 0 <= idx < len(todos):
+            todos[idx]["done"] = True
+            save_json(TODO_FILE, {"todos": todos})
+            self.panel(f"Marked done: {todos[idx]['task']}")
+        else:
+            self.panel("Invalid to‑do number.")
+
+    def cmd_remember(self, match):
+        fact = match.group(1).strip()
+        data = load_json(MEMORY_FILE)
+        facts = data.get("facts", [])
+        facts.append({"fact": fact, "ts": time.time()})
+        save_json(MEMORY_FILE, {"facts": facts})
+        self.panel(f"Remembered: {fact}")
+
+    def cmd_recall(self, *_):
+        data = load_json(MEMORY_FILE)
+        facts = data.get("facts", [])
+        if not facts:
+            self.panel("No memories saved yet. Use: remember <fact>")
+            return
+        if self.console:
+            table = Table(title="Memories", box=box.SIMPLE)
+            table.add_column("#", justify="right")
+            table.add_column("Fact")
+            for i, f in enumerate(facts, 1):
+                table.add_row(str(i), f["fact"])
+            self.console.print(table)
+        else:
+            for i, f in enumerate(facts, 1):
+                print(f"{i}. {f['fact']}")
+
+    def cmd_voice_toggle(self, match):
+        state = match.group(1)
+        enabled = state.lower() == "on"
+        self.speaker = Speaker(enabled=enabled)
+        self.ctx.speaker = self.speaker
+        self.config["voice"] = enabled
+        save_json(CONFIG_FILE, self.config)
+        self.panel(f"Voice {'enabled' if enabled else 'disabled'}.")
+
+    def cmd_joke(self, *_):
+        joke = "Why did the developer go broke? Because he used up all his cache."
+        self.panel(joke)
+        self.speaker.say(joke)
+
+    def cmd_chat_smart(self, match):
+        message = match.group(1).strip()
+        if not self.smart_model_ready:
+            reply = self._rule_based_reply(message)
+            self.panel(reply, title="Smart Chat (offline mode)")
+            self.speaker.say(reply)
+            return
+        try:
+            # OpenAI Chat Completion (replace with latest API if needed)
+            completion = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": "You are a helpful, concise personal assistant for Harsh."},
+                    {"role": "user", "content": message},
+                ],
+                temperature=0.7,
+                max_tokens=300,
+            )
+            reply = completion.choices[0].message["content"].strip()
+            self.panel(reply, title="Smart Chat")
+            self.speaker.say(reply)
+        except Exception as e:
+            fallback = self._rule_based_reply(message)
+            self.panel(f"(LLM error: {e})\n\n{fallback}", title="Smart Chat (fallback)")
+            self.speaker.say(fallback)
+
+    def cmd_skills(self, *_):
+        skills = [
+            "Time & date (time)",
+            "Open URL (open url <link>)",
+            "Open apps via config (open app <name>)",
+            "Wikipedia summaries (wiki <topic>)",
+            "To‑dos (todo add/list/done)",
+            "Memory (remember / recall)",
+            "Jokes (joke)",
+            "Smart chat (chat <message>)",
+            "Voice TTS on/off (voice on/off)",
+        ]
+        self.panel("\n".join(f"• {s}" for s in skills), title="Installed Skills")
+
+    def cmd_clear(self, *_):
+        os.system('cls' if os.name == 'nt' else 'clear')
+
+    # -------------- Routing --------------
+    def route(self, text: str) -> None:
+        text = text.strip()
+        for pattern, handler in self.command_map.items():
+            m = re.match(pattern, text, flags=re.IGNORECASE)
+            if m:
+                handler(m)
+                return
+        # No command matched -> try smart chat offline rules
+        reply = self._rule_based_reply(text)
+        self.panel(reply, title="Assistant")
+        self.speaker.say(reply)
+
+    # -------------- Simple Offline Brain --------------
+    def _rule_based_reply(self, text: str) -> str:
+        t = text.lower()
+        if any(k in t for k in ["hello", "hi", "hey"]):
+            return "Hi Harsh! Ready to build something awesome? Type 'help' to see skills."
+        if "your name" in t:
+            return f"I'm {APP_NAME}, your local buddy."
+        if "time" in t or "date" in t or "now" in t:
+            return datetime.now().strftime("It's %I:%M %p on %A, %d %b %Y.")
+        if "who made you" in t:
+            return "You did, Harsh. Obviously. 😎"
+        if "motivate" in t or "motivation" in t:
+            return "Small consistent steps > big random bursts. Ship one tiny improvement today."
+        return (
+            "I didn't recognize that as a command. Try 'help' to see skills, or say "
+            "'chat <message>' if you configured OpenAI for smarter replies."
+        )
+
+
+# ---------------------------
+# Entry Point
+# ---------------------------
+
+def banner():
+    msg = (
+        f"\n[ {APP_NAME} ]\n"
+        "Type 'help' to see what I can do.\n"
+        "Examples: time | open url google.com | wiki NumPy | todo add Study | chat What is AI?\n"
+        "Type 'exit' to quit.\n"
+    )
+    return msg
+
+
+def main():
+    assistant = HarshAssistant()
+    if assistant.console:
+        assistant.console.rule(f"[bold]{APP_NAME} — Ready")
+        assistant.print(banner())
+    else:
+        print(banner())
+
+    while True:
+        try:
+            if assistant.console:
+                user_in = Prompt.ask("You")
+            else:
+                user_in = input("You> ")
+            if not user_in:
+                continue
+            assistant.route(user_in)
+        except (KeyboardInterrupt, EOFError):
+            assistant.cmd_exit()
+        except Exception as e:
+            assistant.panel(f"Error: {e}")
+
+
+if __name__ == "__main__":
+    main()
